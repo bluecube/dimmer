@@ -3,7 +3,7 @@
 #include <avr/interrupt.h>
 #include <avr/sleep.h>
 
-enum State {
+enum PowerState {
     STATE_OFF,
     STATE_ON,
     STATE_BUTTON,
@@ -14,11 +14,13 @@ static const uint8_t PWM_MAX = 167; // maximum value of PWM counter (corresponds
 static const uint8_t PWM_MIN = 10; // minimum value of PWM counter, used to limit minimum brightness of the light.
 static const uint16_t TRIGGER_VOLTAGE = 304; // ADC reading below which the power off transition gets triggered (calculated in dimmer.ipynb)
 
-enum State state;
+enum PowerState state;
+uint8_t buttonState, buttonCounter;
 
 // Slow down clock and go to "idle" sleep mode
+// Should be called with interrupts enabled
 void go_to_sleep() {
-    cli();
+    cli(); // Disable interupts to do the slowing down of system clock atomically
     CLKPR = 1<<CLKPCE; // Unlock prescaler change
     CLKPR = 1<<CLKPS2 | 1<<CLKPS1; // Set prescaler to 64 (125kHz, lowest possible speed for ADC)
     set_sleep_mode(SLEEP_MODE_IDLE);
@@ -41,21 +43,9 @@ void setup_voltage_monitoring() {
              0; // ADPS2:0 all zero, prescaler 2
 }
 
-void setup_output() {
-
-}
-
 void setup() {
     setup_voltage_monitoring();
     setup_output();
-}
-
-void disable_output() {
-    
-}
-
-void disable_votlage_monitoring() {
-    
 }
 
 // Transition to state STATE_OFF
@@ -65,15 +55,21 @@ void power_off() {
 
     disable_output();
     disable_voltage_monitoring();
-    set_int0_level_triggered();
+    set_int0_level_triggered(); // Only level triggered interrupt can wake us up from power-down sleep mode
 
-    save_brightnes(); // Trigger the EEPROM write
+    save_brightnes(get_brightness); // Trigger the EEPROM write
 
     // The rest of the transition will be done in the EEPROM ISR
 }
 
 void power_on() {
-    set_int0_edge_triggered();
+    state = STATE_ON;
+
+    set_int0_edge_triggered(); // We need to detect both button press and release
+    enable_voltage_monitoring();
+    enable_outputs();
+
+    set_brightness(load_brightness());
 }
 
 void __attribute__((OS_main,noreturn)) main() {
@@ -103,14 +99,29 @@ ISR(ADC_vect) {
 
 ISR(INT0_vect) {
     restore_clock_speed();
-    switch (state) {
-        case STATE_OFF:
-            power_on();
-            break;
-        case STATE_ON:
-            state = STATE_BUTTON;
-            break;
+    uint8_t newButtonState = PINB & _BV(PB2);
+
+    if (state == STATE_OFF)
+    {
+        power_on();
+        buttonState = newButtonState;
+        buttonCounter = 1;
+        return;
     }
+
+    if (newButtonState == buttonState)
+        return; // Can this even happen?
+
+    if (buttonState)
+    {
+        // Pressed the button
+
+    }
+    else
+    {
+        // Released the button
+    }
+
 }
 
 ISR(TIM1_OVF_vect) {
